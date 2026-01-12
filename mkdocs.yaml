@@ -1,0 +1,93 @@
+site_name: umath Documentation
+site_description: Lightweight C++23 numeric primitives (uint128/int128) and decimal types (Numeric128, Numeric) with predictable rounding and error handling.
+site_url: https://usub-development.github.io/umath/
+
+repo_url: https://github.com/Usub-development/umath
+repo_name: Usub-development/umath
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - autorefs
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - attr_list
+  - tables
+  - def_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - CMake integration: getting-started/cmake.md
+  - Types:
+      - uint128: types/uint128.md
+      - int128: types/int128.md
+      - Numeric128: types/numeric128.md
+      - Numeric: types/numeric.md
+  - Guides:
+      - Parsing & formatting: guides/parsing-formatting.md
+      - Rounding & scale: guides/rounding-scale.md
+      - Error handling rules: guides/errors.md
+  - Reference:
+      - Limits & guarantees: reference/limits.md
+      - Binary/decimal details: reference/representation.md
+      - Compatibility notes: reference/compat.md
+  - FAQ: faq.md
+  - Contributing: contributing.md
+  - License: license.md
+  - Changelog: changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Usub-development/umath
+      name: GitHub Repository
+    - icon: fontawesome/solid/star
+      link: https://github.com/Usub-development/umath/stargazers
+      name: Star on GitHub
+
+copyright: >
+  Copyright © 2025 Usub-development, Kirill Zhukov (g2px1)
