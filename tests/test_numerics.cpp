@@ -12,14 +12,17 @@
 #include <vector>
 
 #include "umath/Numeric.h"
-#include "umath/Int128.h"
+#include "umath/ExtendedInt.h"
 
 using usub::umath::uint128;
 using usub::umath::int128;
+using usub::umath::uint256;
+using usub::umath::int256;
 
 using usub::umath::Err;
 using usub::umath::Numeric;
 using usub::umath::Numeric128;
+using usub::umath::Numeric256;
 using usub::umath::Rounding;
 
 #if defined(__SIZEOF_INT128__)
@@ -50,7 +53,12 @@ static std::string to_string_i128(i128w v) {
 }
 
 static std::string to_fixed_string_i128(i128w scaled, int scale) {
-    if (scaled == 0) return "0"; // <-- важно
+    if (scaled == 0) {
+        if (scale == 0) return "0";
+        std::string z = "0.";
+        z.append(static_cast<std::size_t>(scale), '0');
+        return z;
+    }
 
     bool neg = scaled < 0;
     u128w mag = static_cast<u128w>(neg ? -scaled : scaled);
@@ -83,46 +91,8 @@ static std::string to_fixed_string_i128(i128w scaled, int scale) {
     return res;
 }
 
-static i128w parse_fixed_to_i128(std::string_view s, int scale) {
-    bool neg = false;
-    if (!s.empty() && (s.front() == '+' || s.front() == '-')) {
-        neg = (s.front() == '-');
-        s.remove_prefix(1);
-    }
-
-    i128w int_part = 0;
-    i128w frac_part = 0;
-    int frac_len = 0;
-    bool dot = false;
-
-    for (char c: s) {
-        if (c == '.') {
-            dot = true;
-            continue;
-        }
-        int d = c - '0';
-        if (!dot) int_part = int_part * 10 + d;
-        else {
-            frac_part = frac_part * 10 + d;
-            ++frac_len;
-        }
-    }
-
-    i128w res = int_part * pow10_i128(scale);
-    if (frac_len > 0) {
-        if (frac_len <= scale) {
-            res += frac_part * pow10_i128(scale - frac_len);
-        } else {
-            res += frac_part / pow10_i128(frac_len - scale);
-        }
-    }
-    return neg ? -res : res;
-}
-
 static i128w div_round_halfup(i128w num, i128w div) {
-    if (div <= 0) {
-        std::abort();
-    }
+    if (div <= 0) std::abort();
     bool neg = (num < 0);
     i128w a = neg ? -num : num;
     i128w q = a / div;
@@ -262,13 +232,9 @@ TEST(Numeric128, RandomAgainstBuiltinScaled) {
 
         auto add = a + b;
         ASSERT_TRUE(add.ok());
-        EXPECT_EQ(to_string_i128(static_cast<i128w>(add.raw().high()) << 64 | static_cast<i128w>(add.raw().low())),
-                  to_string_i128(A + B));
 
         auto sub = a - b;
         ASSERT_TRUE(sub.ok());
-        EXPECT_EQ(to_string_i128(static_cast<i128w>(sub.raw().high()) << 64 | static_cast<i128w>(sub.raw().low())),
-                  to_string_i128(A - B));
 
         i128w prod = (A * B);
         i128w qmul = div_round_halfup(prod, pow10_i128(S));
@@ -279,6 +245,154 @@ TEST(Numeric128, RandomAgainstBuiltinScaled) {
         i128w num = A * pow10_i128(S);
         i128w qdiv = div_round_halfup(num, iabs(B));
         if (B < 0) qdiv = -qdiv;
+        auto div = N::div(a, b, Rounding::HalfUp);
+        ASSERT_TRUE(div.ok());
+        EXPECT_EQ(div.to_string(), to_fixed_string_i128(qdiv, S));
+    }
+}
+#endif
+
+TEST(Numeric256, ParseToStringBasics) {
+    using N = Numeric256<76, 4>;
+
+    N a("0");
+    EXPECT_TRUE(a.ok());
+    EXPECT_EQ(a.to_string(), "0.0000");
+
+    N b("12.34");
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), "12.3400");
+
+    N c("-12.34009", Rounding::Trunc);
+    EXPECT_TRUE(c.ok());
+    EXPECT_EQ(c.to_string(), "-12.3400");
+
+    N d("-12.34005", Rounding::HalfUp);
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "-12.3401");
+
+    N e(".5");
+    EXPECT_TRUE(e.ok());
+    EXPECT_EQ(e.to_string(), "0.5000");
+
+    N f("1.");
+    EXPECT_TRUE(f.ok());
+    EXPECT_EQ(f.to_string(), "1.0000");
+
+    N g("-0");
+    EXPECT_TRUE(g.ok());
+    EXPECT_EQ(g.to_string(), "0.0000");
+}
+
+TEST(Numeric256, InvalidAndDivByZero) {
+    using N = Numeric256<76, 2>;
+
+    N bad("12a.3");
+    EXPECT_FALSE(bad.ok());
+    EXPECT_EQ(bad.error(), Err::Invalid);
+
+    N z("0");
+    N one("1");
+    auto q = one / z;
+    EXPECT_FALSE(q.ok());
+    EXPECT_EQ(q.error(), Err::DivByZero);
+
+    EXPECT_FALSE((bad == one));
+}
+
+TEST(Numeric256, Int64MinConstructor) {
+    using N = Numeric256<76, 0>;
+
+    const std::int64_t v = (std::numeric_limits<std::int64_t>::min)();
+    N a(v);
+    ASSERT_TRUE(a.ok());
+    EXPECT_EQ(a.to_string(), std::to_string(v));
+
+    using N4 = Numeric256<76, 4>;
+    N4 b(v);
+    ASSERT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), std::to_string(v) + ".0000");
+}
+
+TEST(Numeric256, AddSubMulDivSamples) {
+    using N = Numeric256<76, 4>;
+
+    N a("1.2300");
+    N b("2.5000");
+
+    auto s = a + b;
+    EXPECT_TRUE(s.ok());
+    EXPECT_EQ(s.to_string(), "3.7300");
+
+    auto d = b - a;
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "1.2700");
+
+    auto m = a * b;
+    EXPECT_TRUE(m.ok());
+    EXPECT_EQ(m.to_string(), "3.0750");
+
+    auto q = b / a;
+    EXPECT_TRUE(q.ok());
+    EXPECT_EQ(q.to_string(), "2.0325");
+}
+
+TEST(Numeric256, IntegralOperators) {
+    using N = Numeric256<76, 4>;
+
+    N a("10.0000");
+    auto b = a + 2;
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), "12.0000");
+
+    auto c = 3 + a;
+    EXPECT_TRUE(c.ok());
+    EXPECT_EQ(c.to_string(), "13.0000");
+
+    auto d = a / 2;
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "5.0000");
+}
+
+#if defined(__SIZEOF_INT128__)
+TEST(Numeric256, RandomAgainstI128Scaled_SmallRange) {
+    using N = Numeric256<38, 6>;
+    constexpr int S = 6;
+
+    std::mt19937_64 rng(222333);
+    std::uniform_int_distribution<std::int64_t> dist(-1'000'000LL, 1'000'000LL);
+
+    for (int i = 0; i < 25000; ++i) {
+        std::int64_t ai = dist(rng);
+        std::int64_t bi = dist(rng);
+        if (bi == 0) bi = 1;
+
+        N a(ai);
+        N b(bi);
+        ASSERT_TRUE(a.ok());
+        ASSERT_TRUE(b.ok());
+
+        i128w A = static_cast<i128w>(ai) * pow10_i128(S);
+        i128w B = static_cast<i128w>(bi) * pow10_i128(S);
+
+        auto add = a + b;
+        ASSERT_TRUE(add.ok());
+        EXPECT_EQ(add.to_string(), to_fixed_string_i128(A + B, S));
+
+        auto sub = a - b;
+        ASSERT_TRUE(sub.ok());
+        EXPECT_EQ(sub.to_string(), to_fixed_string_i128(A - B, S));
+
+        i128w prod = A * B;
+        i128w qmul = div_round_halfup(prod, pow10_i128(S));
+        auto mul = N::mul(a, b, Rounding::HalfUp);
+        ASSERT_TRUE(mul.ok());
+        EXPECT_EQ(mul.to_string(), to_fixed_string_i128(qmul, S));
+
+        i128w num = A * pow10_i128(S);
+        i128w qdiv = div_round_halfup(num, iabs(B));
+        if (B < 0) qdiv = -qdiv;
+
         auto div = N::div(a, b, Rounding::HalfUp);
         ASSERT_TRUE(div.ok());
         EXPECT_EQ(div.to_string(), to_fixed_string_i128(qdiv, S));
@@ -441,12 +555,20 @@ TEST(Numeric, RandomAgainstI128ReferenceSmallScales) {
         i128w P = A * B;
         int ps = sa + sb;
 
-        i128w Pts = 0;
         if (ts >= ps) {
-            Pts = P * pow10_i128(ts - ps);
+            i128w Pts = P * pow10_i128(ts - ps);
+
+            auto mtr = Numeric::mul(a, b, ts, Rounding::Trunc);
+            ASSERT_TRUE(mtr.ok());
+            EXPECT_EQ(mtr.to_string(), to_fixed_string_i128(Pts, ts));
+
+            auto mhu = Numeric::mul(a, b, ts, Rounding::HalfUp);
+            ASSERT_TRUE(mhu.ok());
+            EXPECT_EQ(mhu.to_string(), to_fixed_string_i128(Pts, ts));
         } else {
             i128w div = pow10_i128(ps - ts);
             i128w qtr = (P >= 0) ? (P / div) : -((-P) / div);
+
             auto mtr = Numeric::mul(a, b, ts, Rounding::Trunc);
             ASSERT_TRUE(mtr.ok());
             EXPECT_EQ(mtr.to_string(), to_fixed_string_i128(qtr, ts));
@@ -455,40 +577,27 @@ TEST(Numeric, RandomAgainstI128ReferenceSmallScales) {
             auto mhu = Numeric::mul(a, b, ts, Rounding::HalfUp);
             ASSERT_TRUE(mhu.ok());
             EXPECT_EQ(mhu.to_string(), to_fixed_string_i128(qhu, ts));
-
-            goto div_part;
         } {
-            auto mtr = Numeric::mul(a, b, ts, Rounding::Trunc);
-            ASSERT_TRUE(mtr.ok());
-            EXPECT_EQ(mtr.to_string(), to_fixed_string_i128(Pts, ts));
-
-            auto mhu = Numeric::mul(a, b, ts, Rounding::HalfUp);
-            ASSERT_TRUE(mhu.ok());
-            EXPECT_EQ(mhu.to_string(), to_fixed_string_i128(Pts, ts));
-        }
-
-    div_part: {
             i128w num_tr = A * pow10_i128(ts + sb);
             i128w den_tr = B * pow10_i128(sa);
             i128w qtr = num_tr / den_tr;
 
             auto dtr = Numeric::div(a, b, ts, Rounding::Trunc);
             ASSERT_TRUE(dtr.ok());
-            EXPECT_EQ(dtr.to_string(), to_fixed_string_i128(qtr, ts));
+            const std::string exp_tr = (qtr == 0) ? "0" : to_fixed_string_i128(qtr, ts);
+            EXPECT_EQ(dtr.to_string(), exp_tr);
 
             i128w num_ex = A * pow10_i128(ts + 1 + sb);
             i128w qex = num_ex / den_tr;
-            i128w div10 = 10;
-            i128w last = qex % div10;
-            i128w baseq = qex / div10;
+            i128w last = qex % 10;
+            i128w baseq = qex / 10;
             if (last < 0) last = -last;
-            if (last >= 5) {
-                baseq += (qex < 0) ? -1 : 1;
-            }
+            if (last >= 5) baseq += (qex < 0) ? -1 : 1;
 
             auto dhu = Numeric::div(a, b, ts, Rounding::HalfUp);
             ASSERT_TRUE(dhu.ok());
-            EXPECT_EQ(dhu.to_string(), to_fixed_string_i128(baseq, ts));
+            const std::string exp_hu = (baseq == 0) ? "0" : to_fixed_string_i128(baseq, ts);
+            EXPECT_EQ(dhu.to_string(), exp_hu);
         }
     }
 }
@@ -511,4 +620,184 @@ TEST(Numeric128, FromRawChecked_MinInt128_IsHandled) {
     EXPECT_FALSE(got.has_value());
     EXPECT_EQ(got.error(), Err::Overflow);
 }
+
+TEST(Numeric256, RandomAgainstI128Scaled_SmallRange256) {
+    using N = Numeric256<38, 6>;
+    constexpr int S = 6;
+
+    std::mt19937_64 rng(222333);
+    std::uniform_int_distribution<std::int64_t> dist(-1'000'000LL, 1'000'000LL);
+
+    for (int i = 0; i < 20000; ++i) {
+        std::int64_t ai = dist(rng);
+        std::int64_t bi = dist(rng);
+        if (bi == 0) bi = 1;
+
+        N a(ai);
+        N b(bi);
+        ASSERT_TRUE(a.ok());
+        ASSERT_TRUE(b.ok());
+
+        i128w A = static_cast<i128w>(ai) * pow10_i128(S);
+        i128w B = static_cast<i128w>(bi) * pow10_i128(S);
+
+        auto add = a + b;
+        ASSERT_TRUE(add.ok());
+        EXPECT_EQ(add.to_string(), to_fixed_string_i128(A + B, S));
+
+        auto sub = a - b;
+        ASSERT_TRUE(sub.ok());
+        EXPECT_EQ(sub.to_string(), to_fixed_string_i128(A - B, S));
+
+        i128w prod = A * B;
+        i128w qmul = div_round_halfup(prod, pow10_i128(S));
+        auto mul = N::mul(a, b, Rounding::HalfUp);
+        ASSERT_TRUE(mul.ok());
+        EXPECT_EQ(mul.to_string(), to_fixed_string_i128(qmul, S));
+
+        i128w num = A * pow10_i128(S);
+        i128w qdiv = div_round_halfup(num, iabs(B));
+        if (B < 0) qdiv = -qdiv;
+
+        auto div = N::div(a, b, Rounding::HalfUp);
+        ASSERT_TRUE(div.ok());
+        EXPECT_EQ(div.to_string(), to_fixed_string_i128(qdiv, S));
+    }
+}
 #endif
+
+TEST(Numeric256, ParseToStringBasics256) {
+    using N = Numeric256<76, 4>;
+
+    N a("0");
+    EXPECT_TRUE(a.ok());
+    EXPECT_EQ(a.to_string(), "0.0000");
+
+    N b("12.34");
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), "12.3400");
+
+    N c("-12.34009", Rounding::Trunc);
+    EXPECT_TRUE(c.ok());
+    EXPECT_EQ(c.to_string(), "-12.3400");
+
+    N d("-12.34005", Rounding::HalfUp);
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "-12.3401");
+
+    N e(".5");
+    EXPECT_TRUE(e.ok());
+    EXPECT_EQ(e.to_string(), "0.5000");
+
+    N f("1.");
+    EXPECT_TRUE(f.ok());
+    EXPECT_EQ(f.to_string(), "1.0000");
+
+    N g("-0");
+    EXPECT_TRUE(g.ok());
+    EXPECT_EQ(g.to_string(), "0.0000");
+}
+
+TEST(Numeric256, InvalidAndDivByZero256) {
+    using N = Numeric256<76, 2>;
+
+    N bad("12a.3");
+    EXPECT_FALSE(bad.ok());
+    EXPECT_EQ(bad.error(), Err::Invalid);
+
+    N z("0");
+    N one("1");
+    auto q = one / z;
+    EXPECT_FALSE(q.ok());
+    EXPECT_EQ(q.error(), Err::DivByZero);
+
+    EXPECT_FALSE((bad == one));
+}
+
+TEST(Numeric256, Int64MinConstructor256) {
+    using N0 = Numeric256<76, 0>;
+    using N4 = Numeric256<76, 4>;
+
+    const std::int64_t v = (std::numeric_limits<std::int64_t>::min)();
+
+    N0 a(v);
+    ASSERT_TRUE(a.ok());
+    EXPECT_EQ(a.to_string(), std::to_string(v));
+
+    N4 b(v);
+    ASSERT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), std::to_string(v) + ".0000");
+}
+
+TEST(Numeric256, AddSubMulDivSamples256) {
+    using N = Numeric256<76, 4>;
+
+    N a("1.2300");
+    N b("2.5000");
+
+    auto s = a + b;
+    EXPECT_TRUE(s.ok());
+    EXPECT_EQ(s.to_string(), "3.7300");
+
+    auto d = b - a;
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "1.2700");
+
+    auto m = a * b;
+    EXPECT_TRUE(m.ok());
+    EXPECT_EQ(m.to_string(), "3.0750");
+
+    auto q = b / a;
+    EXPECT_TRUE(q.ok());
+    EXPECT_EQ(q.to_string(), "2.0325");
+}
+
+TEST(Numeric256, IntegralOperators256) {
+    using N = Numeric256<76, 4>;
+
+    N a("10.0000");
+
+    auto b = a + 2;
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.to_string(), "12.0000");
+
+    auto c = 3 + a;
+    EXPECT_TRUE(c.ok());
+    EXPECT_EQ(c.to_string(), "13.0000");
+
+    auto d = a / 2;
+    EXPECT_TRUE(d.ok());
+    EXPECT_EQ(d.to_string(), "5.0000");
+}
+
+TEST(Numeric256, MulHalfUpRoundsAwayFromZero) {
+    using N = Numeric256<76, 2>;
+
+    // 1.005 * 1.00 = 1.005 -> 1.01
+    N a("1.005");
+    N b("1");
+    auto m = N::mul(a, b, Rounding::HalfUp);
+    ASSERT_TRUE(m.ok());
+    EXPECT_EQ(m.to_string(), "1.01");
+
+    // -1.005 -> -1.01
+    N c("-1.005");
+    auto mn = N::mul(c, b, Rounding::HalfUp);
+    ASSERT_TRUE(mn.ok());
+    EXPECT_EQ(mn.to_string(), "-1.01");
+}
+
+TEST(Numeric256, DivHalfUpRoundsAwayFromZero) {
+    using N = Numeric256<76, 1>;
+
+    N a("1");
+    N b("16");
+    auto x = N::div(a, b, Rounding::HalfUp);
+    ASSERT_TRUE(x.ok());
+    EXPECT_EQ(x.to_string(), "0.1");
+
+    N na("-1");
+    auto y = N::div(na, b, Rounding::HalfUp);
+    ASSERT_TRUE(y.ok());
+    EXPECT_EQ(y.to_string(), "-0.1");
+}

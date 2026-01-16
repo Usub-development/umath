@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "umath/Int128.h"
+#include "umath/ExtendedInt.h"
 
 using usub::umath::uint128;
 using usub::umath::int128;

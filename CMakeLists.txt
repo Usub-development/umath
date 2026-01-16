@@ -62,12 +62,17 @@ if (UMATH_BUILD_TESTS)
 
     add_executable(umath_tests_int128 tests/test_int128.cpp)
     target_link_libraries(umath_tests_int128 PRIVATE umath GTest::gtest_main)
+    FetchContent_MakeAvailable(googletest)
+
+    add_executable(umath_tests_int256 tests/test_int256.cpp)
+    target_link_libraries(umath_tests_int256 PRIVATE umath GTest::gtest_main)
 
     add_executable(umath_tests_numerics tests/test_numerics.cpp)
     target_link_libraries(umath_tests_numerics PRIVATE umath GTest::gtest_main)
 
     include(GoogleTest)
     gtest_discover_tests(umath_tests_int128 DISCOVERY_MODE PRE_TEST)
+    gtest_discover_tests(umath_tests_int256 DISCOVERY_MODE PRE_TEST)
     gtest_discover_tests(umath_tests_numerics DISCOVERY_MODE PRE_TEST)
 endif ()
 

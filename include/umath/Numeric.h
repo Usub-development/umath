@@ -18,7 +18,7 @@
 #include <concepts>
 #include <type_traits>
 
-#include "Int128.h"
+#include "ExtendedInt.h"
 
 namespace usub::umath {
     using usub::umath::uint128;
@@ -93,6 +93,63 @@ namespace usub::umath {
         inline int128 apply_sign(uint128 mag, bool neg) {
             int128 r(mag);
             return neg ? -r : r;
+        }
+
+        inline int msb_u256(uint256 v) noexcept {
+            const uint128 hi = v.high();
+            if (hi.high() != 0) return 192 + (63 - std::countl_zero(hi.high()));
+            if (hi.low() != 0) return 128 + (63 - std::countl_zero(hi.low()));
+            const uint128 lo = v.low();
+            if (lo.high() != 0) return 64 + (63 - std::countl_zero(lo.high()));
+            if (lo.low() != 0) return (63 - std::countl_zero(lo.low()));
+            return -1;
+        }
+
+        constexpr uint256 pow10_u256(unsigned k) {
+            uint256 r{0U};
+            r = uint256{1U};
+            for (unsigned i = 0; i < k; ++i) r *= uint256{10U};
+            return r;
+        }
+
+        inline uint256 abs_u256(int256 v) noexcept {
+            const uint256 u(v.high(), v.low());
+            if (!v.is_negative()) return u;
+            return uint256{0U} - u;
+        }
+
+        inline bool fits_precision_i256(int256 raw, int P) noexcept {
+            if (P <= 0) return false;
+            if (raw.high() == uint128{0, 0} && raw.low() == uint128{0, 0}) return true;
+            const uint256 a = abs_u256(raw);
+            const uint256 lim = pow10_u256(static_cast<unsigned>(P));
+            return a < lim;
+        }
+
+        inline bool safe_mul_256(uint256 a, uint256 b) noexcept {
+            const int ma = msb_u256(a);
+            const int mb = msb_u256(b);
+            if (ma < 0 || mb < 0) return true;
+            return (ma + mb) < 256;
+        }
+
+        inline uint256 div_u256(uint256 num, uint256 den, uint256 &rem) noexcept {
+            rem = num % den;
+            return num / den;
+        }
+
+        inline int256 apply_sign_u256(uint256 mag, bool neg) noexcept {
+            int256 r(mag.high(), mag.low());
+            return neg ? -r : r;
+        }
+
+        inline bool safe_mul_i256(int256 a, int256 b) noexcept {
+            const uint256 ua = abs_u256(a);
+            const uint256 ub = abs_u256(b);
+            const int ma = msb_u256(ua);
+            const int mb = msb_u256(ub);
+            if (ma < 0 || mb < 0) return true;
+            return (ma + mb) < 255;
         }
     } // namespace detail
 
@@ -373,8 +430,8 @@ namespace usub::umath {
             bool neg = raw_.high() < 0;
             uint128 mag = detail::abs_u(raw_);
 
-            long double v = static_cast<long double>(mag.high());
-            v = v * 18446744073709551616.0L + static_cast<long double>(mag.low()); // 2^64
+            auto v = static_cast<long double>(mag.high());
+            v = v * 18446744073709551616.0L + static_cast<long double>(mag.low());
 
             int s = S;
             while (s > 0) {
@@ -517,6 +574,594 @@ namespace usub::umath {
 
             int128 raw_signed = detail::apply_sign(raw_mag, neg);
             init_from_raw(raw_signed);
+        }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        static self from_integral_(I v) noexcept {
+            using V = std::remove_cvref_t<I>;
+
+            if constexpr (std::signed_integral<V>) {
+                if constexpr (sizeof(V) > sizeof(std::int64_t)) {
+                    if (v < static_cast<V>(std::numeric_limits<std::int64_t>::min()) ||
+                        v > static_cast<V>(std::numeric_limits<std::int64_t>::max())) {
+                        self out;
+                        out.init_error(Err::Overflow);
+                        return out;
+                    }
+                }
+                return self(static_cast<std::int64_t>(v));
+            } else {
+                if constexpr (sizeof(V) > sizeof(std::int64_t)) {
+                    if (v > static_cast<V>(std::numeric_limits<std::int64_t>::max())) {
+                        self out;
+                        out.init_error(Err::Overflow);
+                        return out;
+                    }
+                } else {
+                    if (static_cast<std::uint64_t>(v) >
+                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                        self out;
+                        out.init_error(Err::Overflow);
+                        return out;
+                    }
+                }
+                return self(static_cast<std::int64_t>(static_cast<std::uint64_t>(v)));
+            }
+        }
+
+        static long double pow10_ld_(int k) noexcept {
+            switch (k) {
+                case 0: return 1.0L;
+                case 1: return 10.0L;
+                case 2: return 100.0L;
+                case 3: return 1000.0L;
+                case 4: return 10000.0L;
+                case 5: return 100000.0L;
+                case 6: return 1000000.0L;
+                case 7: return 10000000.0L;
+                case 8: return 100000000.0L;
+                case 9: return 1000000000.0L;
+                case 10: return 10000000000.0L;
+                case 11: return 100000000000.0L;
+                case 12: return 1000000000000.0L;
+                case 13: return 10000000000000.0L;
+                case 14: return 100000000000000.0L;
+                case 15: return 1000000000000000.0L;
+                case 16: return 10000000000000000.0L;
+                case 17: return 100000000000000000.0L;
+                case 18: return 1000000000000000000.0L;
+                default: return 1.0L;
+            }
+        }
+    };
+
+    template<int P, int S>
+    class Numeric256 {
+    public:
+        static_assert(P >= 1);
+        static_assert(S >= 0);
+        static_assert(S <= P);
+        static_assert(P <= 76);
+
+        using self = Numeric256<P, S>;
+        using checked_t = std::expected<self, Err>;
+
+        static constexpr int precision = P;
+        static constexpr int scale = S;
+
+        constexpr Numeric256() noexcept = default;
+
+        explicit Numeric256(std::int64_t v) noexcept { init_from_int64(v); }
+        explicit Numeric256(std::string_view s, Rounding r = Rounding::HalfUp) noexcept { init_parse(s, r); }
+
+        [[nodiscard]] bool ok() const noexcept { return err_ == Err::None; }
+        [[nodiscard]] Err error() const noexcept { return err_; }
+        explicit operator bool() const noexcept { return ok(); }
+
+        [[nodiscard]] checked_t checked() const noexcept {
+            if (!ok()) return std::unexpected(err_);
+            return *this;
+        }
+
+        static checked_t from_raw_checked(int256 r) noexcept {
+            self out;
+            out.init_from_raw(r);
+            return out.checked();
+        }
+
+        static checked_t from_int64_checked(std::int64_t v) noexcept {
+            self out;
+            out.init_from_int64(v);
+            return out.checked();
+        }
+
+        static checked_t parse_checked(std::string_view s, Rounding r = Rounding::HalfUp) noexcept {
+            self out;
+            out.init_parse(s, r);
+            return out.checked();
+        }
+
+        [[nodiscard]] int256 raw() const noexcept { return raw_; }
+
+        [[nodiscard]] std::string to_string() const {
+            if (!ok()) return "<err>";
+
+            const bool neg = raw_.is_negative();
+            const uint256 mag = detail::abs_u256(raw_);
+
+            if (mag == uint256{0U}) {
+                if constexpr (S == 0) return "0";
+                std::string z = "0.";
+                z.append(static_cast<std::size_t>(S), '0');
+                return z;
+            }
+
+            const uint256 div = detail::pow10_u256(static_cast<unsigned>(S));
+            const uint256 int_mag = mag / div;
+            const uint256 frac_mag = mag % div;
+
+            std::string is = int_mag.to_string();
+            if constexpr (S == 0) {
+                return neg ? ("-" + is) : is;
+            }
+
+            std::string fs = frac_mag.to_string();
+            if (fs.size() < static_cast<std::size_t>(S)) {
+                fs.insert(fs.begin(), static_cast<std::size_t>(S) - fs.size(), '0');
+            }
+
+            std::string out;
+            out.reserve(is.size() + 1 + fs.size() + (neg ? 1U : 0U));
+            if (neg) out.push_back('-');
+            out += is;
+            out.push_back('.');
+            out += fs;
+            return out;
+        }
+
+        friend inline std::ostream &operator<<(std::ostream &os, const self &v) {
+            return os << v.to_string();
+        }
+
+        friend bool operator==(const self &a, const self &b) noexcept {
+            if (!a.ok() || !b.ok()) return false;
+            return a.raw_ == b.raw_;
+        }
+
+        friend auto operator<=>(const self &a, const self &b) noexcept {
+            return a.raw_ <=> b.raw_;
+        }
+
+        friend self operator+(self v) noexcept { return v; }
+
+        friend self operator-(self v) noexcept {
+            if (!v.ok()) return v;
+            self out;
+            out.init_from_raw(-v.raw_);
+            return out;
+        }
+
+        friend self operator+(const self &a, const self &b) noexcept { return add(a, b); }
+        friend self operator-(const self &a, const self &b) noexcept { return sub(a, b); }
+        friend self operator*(const self &a, const self &b) noexcept { return mul(a, b, Rounding::HalfUp); }
+        friend self operator/(const self &a, const self &b) noexcept { return div(a, b, Rounding::HalfUp); }
+
+        self &operator+=(const self &b) noexcept {
+            *this = *this + b;
+            return *this;
+        }
+
+        self &operator-=(const self &b) noexcept {
+            *this = *this - b;
+            return *this;
+        }
+
+        self &operator*=(const self &b) noexcept {
+            *this = *this * b;
+            return *this;
+        }
+
+        self &operator/=(const self &b) noexcept {
+            *this = *this / b;
+            return *this;
+        }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator+(const self &a, I b) noexcept { return a + from_integral_(b); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator-(const self &a, I b) noexcept { return a - from_integral_(b); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator*(const self &a, I b) noexcept { return a * from_integral_(b); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator/(const self &a, I b) noexcept { return a / from_integral_(b); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator+(I a, const self &b) noexcept { return from_integral_(a) + b; }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator-(I a, const self &b) noexcept { return from_integral_(a) - b; }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator*(I a, const self &b) noexcept { return from_integral_(a) * b; }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        friend self operator/(I a, const self &b) noexcept { return from_integral_(a) / b; }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        self &operator+=(I b) noexcept { return (*this += from_integral_(b)); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        self &operator-=(I b) noexcept { return (*this -= from_integral_(b)); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        self &operator*=(I b) noexcept { return (*this *= from_integral_(b)); }
+
+        template<std::integral I>
+            requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+        self &operator/=(I b) noexcept { return (*this /= from_integral_(b)); }
+
+        static self add(const self &a, const self &b) noexcept {
+            if (!a.ok()) return a;
+            if (!b.ok()) return b;
+
+            self out;
+
+            const bool an = a.raw_.is_negative();
+            const bool bn = b.raw_.is_negative();
+            const uint256 ua = detail::abs_u256(a.raw_);
+            const uint256 ub = detail::abs_u256(b.raw_);
+
+            uint256 mag{0U};
+            bool neg = false;
+
+            if (ua == uint256{0U}) {
+                out.init_from_raw(b.raw_);
+                return out;
+            }
+            if (ub == uint256{0U}) {
+                out.init_from_raw(a.raw_);
+                return out;
+            }
+
+            if (an == bn) {
+                const uint256 sum = ua + ub;
+                if (sum < ua) {
+                    out.init_error(Err::Overflow);
+                    return out;
+                }
+                mag = sum;
+                neg = an;
+            } else {
+                if (ua == ub) {
+                    out.raw_ = int256(uint128{0, 0}, uint128{0, 0});
+                    out.err_ = Err::None;
+                    return out;
+                }
+                if (ua > ub) {
+                    mag = ua - ub;
+                    neg = an;
+                } else {
+                    mag = ub - ua;
+                    neg = bn;
+                }
+            }
+
+            out.init_from_raw(detail::apply_sign_u256(mag, neg));
+            return out;
+        }
+
+        static self sub(const self &a, const self &b) noexcept {
+            if (!a.ok()) return a;
+            if (!b.ok()) return b;
+            self nb = b;
+            nb.raw_ = -nb.raw_;
+            return add(a, nb);
+        }
+
+        static self mul(const self &a, const self &b, Rounding rnd) noexcept {
+            if (!a.ok()) return a;
+            if (!b.ok()) return b;
+
+            self out;
+
+            if (!detail::safe_mul_i256(a.raw_, b.raw_)) {
+                out.init_error(Err::Overflow);
+                return out;
+            }
+
+            const bool neg = a.raw_.is_negative() ^ b.raw_.is_negative();
+            const uint256 ua = detail::abs_u256(a.raw_);
+            const uint256 ub = detail::abs_u256(b.raw_);
+
+            const uint256 prod = ua * ub;
+            const uint256 divv = detail::pow10_u256(static_cast<unsigned>(S));
+
+            uint256 r{};
+            uint256 q = detail::div_u256(prod, divv, r);
+
+            if (rnd == Rounding::HalfUp) {
+                const uint256 two_r = r + r;
+                if (two_r >= divv) {
+                    const uint256 qq = q + uint256{1U};
+                    if (qq < q) {
+                        out.init_error(Err::Overflow);
+                        return out;
+                    }
+                    q = qq;
+                }
+            }
+
+            out.init_from_raw(detail::apply_sign_u256(q, neg));
+            return out;
+        }
+
+        static self div(const self &a, const self &b, Rounding rnd) noexcept {
+            if (!a.ok()) return a;
+            if (!b.ok()) return b;
+
+            self out;
+
+            if (b.raw_ == int256(uint128{0, 0}, uint128{0, 0})) {
+                out.init_error(Err::DivByZero);
+                return out;
+            }
+
+            const bool neg = a.raw_.is_negative() ^ b.raw_.is_negative();
+            const uint256 ua = detail::abs_u256(a.raw_);
+            const uint256 ub = detail::abs_u256(b.raw_);
+
+            const uint256 mult = detail::pow10_u256(static_cast<unsigned>(S));
+            if (!detail::safe_mul_256(ua, mult)) {
+                out.init_error(Err::Overflow);
+                return out;
+            }
+
+            const uint256 num = ua * mult;
+            uint256 r{};
+            uint256 q = detail::div_u256(num, ub, r);
+
+            if (rnd == Rounding::HalfUp) {
+                const uint256 two_r = r + r;
+                if (two_r >= ub) {
+                    const uint256 qq = q + uint256{1U};
+                    if (qq < q) {
+                        out.init_error(Err::Overflow);
+                        return out;
+                    }
+                    q = qq;
+                }
+            }
+
+            out.init_from_raw(detail::apply_sign_u256(q, neg));
+            return out;
+        }
+
+        [[nodiscard]] long double to_long_double() const noexcept {
+            if (!ok()) return 0.0L;
+
+            const bool neg = raw_.is_negative();
+            const uint256 mag = detail::abs_u256(raw_);
+            if (mag == uint256{0U}) return 0.0L;
+
+            const uint128 hi = mag.high();
+            const uint128 lo = mag.low();
+
+            const long double two64 = 18446744073709551616.0L;
+
+            long double v = 0.0L;
+            v = v * two64 + static_cast<long double>(hi.high());
+            v = v * two64 + static_cast<long double>(hi.low());
+            v = v * two64 + static_cast<long double>(lo.high());
+            v = v * two64 + static_cast<long double>(lo.low());
+
+            int s = S;
+            while (s > 0) {
+                const int step = (s > 18) ? 18 : s;
+                v /= pow10_ld_(step);
+                s -= step;
+            }
+
+            return neg ? -v : v;
+        }
+
+        operator long double() const noexcept { return to_long_double(); }
+
+    private:
+        int256 raw_{};
+        Err err_{Err::None};
+
+        void init_error(Err e) noexcept {
+            raw_ = int256(uint128{0, 0}, uint128{0, 0});
+            err_ = e;
+        }
+
+        void init_from_raw(int256 r) noexcept {
+            if (!detail::fits_precision_i256(r, P)) {
+                init_error(Err::Overflow);
+                return;
+            }
+            raw_ = r;
+            err_ = Err::None;
+        }
+
+        void init_from_int64(std::int64_t v) noexcept {
+            const bool neg = (v < 0);
+
+            const std::uint64_t av = neg
+                                         ? (static_cast<std::uint64_t>(~static_cast<std::uint64_t>(v)) + 1ULL)
+                                         : static_cast<std::uint64_t>(v);
+
+            const uint256 mult = detail::pow10_u256(static_cast<unsigned>(S));
+            const uint256 uav{av};
+
+            if (!detail::safe_mul_256(uav, mult)) {
+                init_error(Err::Overflow);
+                return;
+            }
+
+            const uint256 mag = uav * mult;
+            init_from_raw(detail::apply_sign_u256(mag, neg));
+        }
+
+        void init_parse(std::string_view s, Rounding rnd) noexcept {
+            if (s.empty()) {
+                init_error(Err::Invalid);
+                return;
+            }
+
+            bool neg = false;
+            if (s.front() == '+') s.remove_prefix(1);
+            else if (s.front() == '-') {
+                neg = true;
+                s.remove_prefix(1);
+            }
+            if (s.empty()) {
+                init_error(Err::Invalid);
+                return;
+            }
+
+            uint256 int_part{0U};
+
+            uint256 frac_keep{0U};
+            unsigned frac_keep_len = 0;
+            unsigned frac_len_total = 0;
+            bool seen_dot = false;
+            bool any = false;
+
+            auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+
+            for (char c: s) {
+                if (c == '.') {
+                    if (seen_dot) {
+                        init_error(Err::Invalid);
+                        return;
+                    }
+                    seen_dot = true;
+                    continue;
+                }
+                if (!is_digit(c)) {
+                    init_error(Err::Invalid);
+                    return;
+                }
+
+                any = true;
+                const auto d = static_cast<std::uint32_t>(c - '0');
+
+                if (!seen_dot) {
+                    if (!detail::safe_mul_256(int_part, uint256{10U})) {
+                        init_error(Err::Overflow);
+                        return;
+                    }
+                    uint256 next = int_part * uint256{10U} + uint256{d};
+                    if (next < int_part) {
+                        init_error(Err::Overflow);
+                        return;
+                    }
+                    int_part = next;
+                } else {
+                    ++frac_len_total;
+                    if (frac_keep_len < static_cast<unsigned>(S + 1)) {
+                        if (!detail::safe_mul_256(frac_keep, uint256{10U})) {
+                            init_error(Err::Overflow);
+                            return;
+                        }
+                        uint256 next = frac_keep * uint256{10U} + uint256{d};
+                        if (next < frac_keep) {
+                            init_error(Err::Overflow);
+                            return;
+                        }
+                        frac_keep = next;
+                        ++frac_keep_len;
+                    }
+                }
+            }
+
+            if (!any) {
+                init_error(Err::Invalid);
+                return;
+            }
+
+            const uint256 p10s = detail::pow10_u256(static_cast<unsigned>(S));
+            if (!detail::safe_mul_256(int_part, p10s)) {
+                init_error(Err::Overflow);
+                return;
+            }
+            uint256 raw_mag = int_part * p10s;
+
+            bool round_up = false;
+
+            if constexpr (S == 0) {
+                if (frac_len_total > 0 && rnd == Rounding::HalfUp) {
+                    if (frac_keep_len != 0) {
+                        uint256 divv = detail::pow10_u256(frac_keep_len - 1);
+                        uint256 first = frac_keep / divv;
+                        round_up = (static_cast<unsigned>(static_cast<std::uint64_t>(first)) >= 5U);
+                    }
+                }
+            } else {
+                if (frac_len_total == 0) {
+                } else if (frac_len_total <= static_cast<unsigned>(S)) {
+                    const unsigned add_zeros = static_cast<unsigned>(S) - frac_len_total;
+                    const uint256 mult = detail::pow10_u256(add_zeros);
+                    if (!detail::safe_mul_256(frac_keep, mult)) {
+                        init_error(Err::Overflow);
+                        return;
+                    }
+                    const uint256 add = frac_keep * mult;
+                    const uint256 sum = raw_mag + add;
+                    if (sum < raw_mag) {
+                        init_error(Err::Overflow);
+                        return;
+                    }
+                    raw_mag = sum;
+                } else {
+                    if (frac_keep_len < static_cast<unsigned>(S + 1)) {
+                        init_error(Err::Invalid);
+                        return;
+                    }
+
+                    uint256 rem{};
+                    uint256 q = detail::div_u256(frac_keep, uint256{10U}, rem);
+
+                    if (rnd == Rounding::HalfUp) {
+                        const auto guard64 = static_cast<std::uint64_t>(rem);
+                        round_up = (guard64 >= 5U);
+                    }
+
+                    const uint256 sum = raw_mag + q;
+                    if (sum < raw_mag) {
+                        init_error(Err::Overflow);
+                        return;
+                    }
+                    raw_mag = sum;
+                }
+            }
+
+            if (round_up) {
+                const uint256 next = raw_mag + uint256{1U};
+                if (next < raw_mag) {
+                    init_error(Err::Overflow);
+                    return;
+                }
+                raw_mag = next;
+            }
+
+            init_from_raw(detail::apply_sign_u256(raw_mag, neg));
         }
 
         template<std::integral I>
@@ -866,7 +1511,6 @@ namespace usub::umath {
             out.scale_ = target_scale + extra;
             out.err_ = Err::None;
 
-            // ВАЖНО: при extra=1 нельзя вызывать normalize_() тут, потому что он сбросит scale_/neg_ на временном нуле.
             while (!out.mag_.empty() && out.mag_.back() == 0U) out.mag_.pop_back();
             if (extra == 0) {
                 if (out.mag_.empty()) {
@@ -884,11 +1528,10 @@ namespace usub::umath {
                     return out;
                 }
 
-                // trim без сброса scale_/neg_
                 while (!out.mag_.empty() && out.mag_.back() == 0U) out.mag_.pop_back();
 
                 if (rem10 >= 5U) {
-                    add_one_(out.mag_); // знак применится через out.neg_ ниже
+                    add_one_(out.mag_);
                     while (!out.mag_.empty() && out.mag_.back() == 0U) out.mag_.pop_back();
                 }
 
